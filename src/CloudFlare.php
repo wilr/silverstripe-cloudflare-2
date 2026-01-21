@@ -9,7 +9,6 @@ use SilverStripe\Control\Controller;
 use SilverStripe\Control\Director;
 use SilverStripe\Core\Config\Configurable;
 use SilverStripe\Core\Convert;
-use SilverStripe\Control\Session;
 use SilverStripe\Core\Environment;
 use SilverStripe\Core\Extensible;
 use SilverStripe\Core\Injector\Injectable;
@@ -17,8 +16,8 @@ use SilverStripe\Core\Injector\Injector;
 use SteadLane\Cloudflare\Messages\Notifications;
 
 /**
- * Class CloudFlare
- * @package SteadLane\Cloudflare
+ * Cloudflare API integration for SilverStripe
+ * Handles authentication, zone management, and cache purging
  */
 class CloudFlare
 {
@@ -27,86 +26,55 @@ class CloudFlare
     use Extensible;
 
     /**
-     * @var string
+     * Cache key for storing the Cloudflare Zone ID
      */
     const CF_ZONE_ID_CACHE_KEY = 'CFZoneID';
 
     /**
-     * This will toggle to TRUE when a ZoneID has been detected thus allowing the functionality in the admin panel to
-     * be available.
+     * Whether a Zone ID has been detected, enabling admin panel functionality
      *
      * @var bool
      */
     protected static $ready = false;
 
     /**
-     * Ensures that Cloudflare authentication credentials are defined as constants
+     * Check if Cloudflare API credentials are configured
      *
      * @return bool
      */
     public function hasCFCredentials()
     {
-        if (!Environment::getEnv('CLOUDFLARE_AUTH_KEY')) {
-            return false;
-        }
-
-        return true;
+        return !empty(Environment::getEnv('CLOUDFLARE_AUTH_KEY'));
     }
 
     /**
-     * Fetches Cloudflare Credentials from YML configuration
-     *
-     * @return array|bool
-     */
-    public function getCFCredentials()
-    {
-        if ($this->hasCFCredentials()) {
-            if (Environment::getEnv('CLOUDFLARE_AUTH_KEY')) {
-                return array(
-                    'email' => Environment::getEnv('CLOUDFLARE_AUTH_KEY'),
-                );
-            } else {
-                return array(
-                    'key'   => CLOUDFLARE_AUTH_KEY
-                );
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Gathers the current server name, which will be used as the Cloudflare zone ID
+     * Get the current server name for Cloudflare zone identification
      *
      * @return string
      */
     public function getServerName()
     {
         $serverName = Environment::getEnv('CLOUDFLARE_SERVER_NAME') ?? '';
-        if($serverName) {
+        if ($serverName) {
             return $serverName;
         }
-        $serverName = '';
+
         if (isset($_SERVER['HTTP_HOST']) && !empty($_SERVER['HTTP_HOST'])) {
-            $serverName = Convert::raw2xml($_SERVER['HTTP_HOST']); // "Fixes" #1 (what?)
-        } else if (!empty($_SERVER['SERVER_NAME'])) {
-            $server = Convert::raw2xml($_SERVER); // "Fixes" #1
-            $serverName = $server['SERVER_NAME'];
+            $serverName = Convert::raw2xml($_SERVER['HTTP_HOST']);
+        } elseif (!empty($_SERVER['SERVER_NAME'])) {
+            $serverName = Convert::raw2xml($_SERVER['SERVER_NAME']);
+        } else {
+            $serverName = '';
         }
 
-        // CI support
-        if (getenv('TRAVIS')) {
-            $serverName = getenv('CLOUDFLARE_DUMMY_SITE');
-        }
-
-        // Remove protocols, etc
-        $replaceWith = array(
+        // Remove protocols
+        $replaceWith = [
             'http://' => '',
             'https://' => ''
-        );
+        ];
         if (!isset($_SERVER['HTTP_HOST'])) {
             $replaceWith['www.'] = '';
-        } // hack!
+        }
         $serverName = str_replace(array_keys($replaceWith), array_values($replaceWith), $serverName);
 
         // Allow extensions to modify or replace the server name if required
@@ -116,18 +84,19 @@ class CloudFlare
     }
 
     /**
-     * Returns whether caching is enabled for the Cloudflare class instance
+     * Check if caching is enabled for the Cloudflare module
+     *
      * @return bool
      */
     public function getCacheEnabled()
     {
-        return (bool)self::config()->get('cache_enabled') === true;
+        return (bool)self::config()->get('cache_enabled');
     }
 
     /**
-     * Gets the CF Zone ID for the current domain.
+     * Get the Cloudflare Zone ID for the current domain
      *
-     * @return string|bool
+     * @return string|bool|null Zone ID on success, false on error, null if no credentials
      */
     public function fetchZoneID()
     {
@@ -149,7 +118,7 @@ class CloudFlare
 
         $serverName = $this->getServerName();
 
-        if ($serverName == 'localhost') {
+        if ($serverName === 'localhost') {
             Notifications::handleMessage(
                 _t(
                     "CloudFlare.NoLocalhost",
@@ -179,9 +148,9 @@ class CloudFlare
                     "Unable to detect a Zone ID for <strong>{server_name}</strong> under the defined Cloudflare" .
                         " user.<br/><br/>Please create a new zone under this account to use this module on this domain.",
                     "",
-                    array(
+                    [
                         "server_name" => $serverName
-                    )
+                    ]
                 ),
                 ["type" => "error"]
             );
@@ -203,8 +172,7 @@ class CloudFlare
     /**
      * Set or get the ready state
      *
-     * @param null $state
-     *
+     * @param bool|null $state
      * @return bool|null
      */
     public function isReady($state = null)
@@ -219,28 +187,38 @@ class CloudFlare
     }
 
     /**
-     * Get or Set the Session Jar
+     * Get session data for Cloudflare notifications
      *
-     * @return array|mixed|null|Session
+     * @return array<string, mixed>
      */
     public function getSessionJar()
     {
-        $session = Controller::curr()->getRequest()->getSession()->get('slCloudFlare');
+        $controller = Controller::curr();
+        if (!$controller || !$controller->getRequest()) {
+            return [];
+        }
+
+        $session = $controller->getRequest()->getSession()->get('slCloudFlare');
         if (!$session) {
-            $session = array();
-            Controller::curr()->getRequest()->getSession()->set('slCloudFlare', $session);
+            $session = [];
         }
         return $session;
     }
 
     /**
-     * @param array|mixed $data
+     * Set session data for Cloudflare notifications
      *
+     * @param array<string, mixed> $data
      * @return $this
      */
     public function setSessionJar($data)
     {
-        Controller::curr()->getRequest()->getSession()->set('slCloudFlare', $data);
+        $controller = Controller::curr();
+        if (!$controller || !$controller->getRequest()) {
+            return $this;
+        }
+
+        $controller->getRequest()->getSession()->set('slCloudFlare', $data);
         return $this;
     }
 
@@ -254,23 +232,13 @@ class CloudFlare
         return (int)self::config()->get('curl_timeout');
     }
 
-    ///**
-    // * Fetch the Cloudflare configuration
-    // * @return \SilverStripe\Core\Config\Config_ForClass
-    // */
-    //public static function config()
-    //{
-    //    return Config::inst()->forClass('CloudFlare');
-    //}
-
     /**
-     * Sends our cURL requests with our custom auth headers
+     * Execute a cURL request to Cloudflare API with authentication
      *
-     * @param string $url    The URL
-     * @param null|string|array $data   Optional array of data to send
-     * @param string $method GET, PUT, POST, DELETE etc
-     *
-     * @return string JSON
+     * @param string $url The API endpoint URL
+     * @param string|array|null $data Optional data to send with the request
+     * @param string $method HTTP method (GET, POST, PUT, DELETE, etc.)
+     * @return string JSON response
      */
     public function curlRequest($url, $data = null, $method = 'DELETE'): string
     {
@@ -284,7 +252,7 @@ class CloudFlare
         curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, $curlTimeout);
         curl_setopt($curl, CURLOPT_TIMEOUT, $curlTimeout);
 
-        curl_setopt($curl, CURLOPT_FOLLOWLOCATION, TRUE);
+        curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
         curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);
 
 
@@ -302,18 +270,24 @@ class CloudFlare
         try {
             $result = curl_exec($curl);
             $responseCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+            $curlError = curl_error($curl);
 
             // Handle any errors
-            if (false === $result) {
-                throw new Exception("Error connecting to Cloudflare: (code={$responseCode})\n" . curl_error($curl));
-            } else if ($errors = json_decode($result)?->errors) {
-                throw new Exception($errors[0]->message . ": (code={$errors[0]->code})");
+            if (false === $result || $curlError) {
+                throw new Exception("Error connecting to Cloudflare: (code={$responseCode}) {$curlError}");
+            }
+            
+            $decoded = json_decode($result);
+            if ($decoded && isset($decoded->errors) && !empty($decoded->errors)) {
+                $errorMsg = $decoded->errors[0]->message ?? 'Unknown error';
+                $errorCode = $decoded->errors[0]->code ?? 'N/A';
+                throw new Exception($errorMsg . ": (code={$errorCode})");
             }
         } catch (Exception $e) {
             //log the exception but don't prevent the page from publishing
             Injector::inst()->get(LoggerInterface::class)->warning($e->getMessage());
+            $result = json_encode(['success' => false, 'errors' => [['message' => $e->getMessage()]]]);
         }
-
 
         curl_close($curl);
 
@@ -321,7 +295,7 @@ class CloudFlare
     }
 
     /**
-     * Fake a user agent
+     * Get the user agent string for Cloudflare API requests
      *
      * @return string
      */
@@ -334,27 +308,24 @@ class CloudFlare
     }
 
     /**
-     * Get Authentication Headers
+     * Get authentication headers for Cloudflare API requests
      *
-     * @return array
+     * @return array<string> Array of HTTP headers
      */
     public function getAuthHeaders()
     {
-        if (getenv('TRAVIS')) {
-            $auth = array(
-                'key' => getenv('AUTH_KEY'),
-            );
-        } elseif (!$auth = $this->getCFCredentials()) {
+        if (!$this->hasCFCredentials()) {
             self::debug("Cloudflare API credentials have not been provided.");
-            user_error("Cloudflare API credentials have not been provided.");
-            //return null;
-            exit;
+            Injector::inst()->get(LoggerInterface::class)->error(
+                "Cloudflare API credentials have not been provided."
+            );
+            return [];
         }
 
-        $headers = array(
+        $headers = [
             "Authorization: Bearer " . Environment::getEnv('CLOUDFLARE_AUTH_KEY'),
             "Content-Type: application/json"
-        );
+        ];
 
         $this->extend("updateCloudFlareAuthHeaders", $headers);
 
@@ -362,29 +333,25 @@ class CloudFlare
     }
 
     /**
-     * Appends server name to input
+     * Prepend server name to URL(s)
      *
-     * @param array|string $input
-     *
-     * @return array|string
+     * @param array<string>|string $input URL or array of URLs
+     * @return array<string>|string Absolute URL(s) with server name
      */
     public function prependServerName($input)
     {
         $serverName = CloudFlare::singleton()->getServerName();
 
         if (is_array($input)) {
-
-            $stack = array();
+            $stack = [];
             foreach ($input as $string) {
                 $stack[] = $this->prependServerName($string);
             }
-
             return $stack;
         }
 
-
         if (strstr($input, "http://") || strstr($input, "https://")) {
-            $input = str_replace(array("http://", "https://"), "", trim($input));
+            $input = str_replace(["http://", "https://"], "", trim($input));
         }
 
         if (strstr($input, $serverName)) {
@@ -394,45 +361,52 @@ class CloudFlare
         return "http://" . str_replace("//", "/", "{$serverName}/{$input}");
     }
 
-    public function canUser($member)
-    {
-        return true;
-    }
-
     /**
-     * @param string $type         Class you want to test, this is purely based on the file naming convention
-     *                             in /tests/Mock of {$type}{$isSuccessful}.json
-     * @param bool   $isSuccessful Should the response be of successful nature or a failure?
+     * Get mock API response for testing
      *
-     * @return array
+     * @param string $type Response type (e.g., 'Purge')
+     * @param bool $isSuccessful Whether to return a success or failure response
+     * @return array<string, mixed> Mock API response
      */
     public static function getMockResponse($type, $isSuccessful)
     {
         $mockDir = rtrim($_SERVER['DOCUMENT_ROOT'], '/') . Director::baseURL() . "cloudflare/tests/Mock/";
 
-        if (getenv('TRAVIS')) {
-            $mockDir = '/home/travis/builds/ss' . $mockDir;
-        }
-
         if (!is_dir($mockDir)) {
-            user_error("The directory $mockDir needs to exist to get mock responses from the Cloudflare module", E_USER_ERROR);
+            Injector::inst()->get(LoggerInterface::class)->error(
+                "Mock directory does not exist: {$mockDir}"
+            );
+            return ['success' => false, 'errors' => [['message' => 'Mock directory not found']]];
         }
 
         $filename = ucfirst($type) . (($isSuccessful) ? "Success" : "Failure") . ".json";
         $path = $mockDir . $filename;
 
+        if (!file_exists($path)) {
+            Injector::inst()->get(LoggerInterface::class)->error(
+                "Mock file does not exist: {$path}"
+            );
+            return ['success' => false, 'errors' => [['message' => 'Mock file not found']]];
+        }
+
         $result = json_decode(file_get_contents($path), true);
 
         if (!$result || !is_array($result)) {
-            user_error($filename . " contents must be a valid JSON string", E_USER_ERROR);
+            Injector::inst()->get(LoggerInterface::class)->error(
+                "Invalid JSON in mock file: {$filename}"
+            );
+            return ['success' => false, 'errors' => [['message' => 'Invalid mock JSON']]];
         }
 
         return $result;
     }
 
     /**
-     * @param string $msg
-     * @param Object|array|null $obj
+     * Debug logging helper
+     *
+     * @param string $msg Debug message
+     * @param mixed $obj Optional object/array to dump
+     * @return void
      */
     public static function debug($msg, $obj = null)
     {

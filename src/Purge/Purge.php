@@ -2,6 +2,7 @@
 
 namespace SteadLane\Cloudflare;
 
+use Psr\Log\LoggerInterface;
 use SilverStripe\Core\Config\Configurable;
 use SilverStripe\Core\Extensible;
 use SilverStripe\Core\Injector\Injectable;
@@ -627,7 +628,10 @@ class Purge
         $fileTypes = $this->getFileTypes();
 
         if (!isset($fileTypes[$what])) {
-            user_error("Attempted to purge all {$what} types but it has no file extension list defined. See CloudFlare_Purge::\$fileTypes", E_USER_ERROR);
+            Injector::inst()->get(LoggerInterface::class)->error(
+                "Attempted to purge all {$what} types but it has no file extension list defined."
+            );
+            return false;
         }
 
         $purger->findFilesWithExts($fileTypes[$what]);

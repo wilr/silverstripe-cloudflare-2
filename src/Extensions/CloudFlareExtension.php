@@ -5,7 +5,6 @@ namespace SteadLane\Cloudflare;
 use SilverStripe\CMS\Model\SiteTree;
 use SilverStripe\Core\Extension;
 use SilverStripe\Core\Injector\Injector;
-use SilverStripe\ORM\DataList;
 use SilverStripe\ORM\DataObject;
 use SilverStripe\Forms\FieldList;
 use SilverStripe\Forms\FormAction;
@@ -14,124 +13,138 @@ use SteadLane\Cloudflare\Messages\Notifications;
 use Symbiote\QueuedJobs\Services\QueuedJobService;
 
 /**
- * Class CloudFlareExtension
- * @package silverstripe-cloudflare
+ * SiteTree extension for Cloudflare cache purging on page publish/unpublish
+ *
  * @property SiteTree $owner
  */
 class CloudFlareExtension extends Extension
 {
     /**
-     * Extension Hook
+     * Get the page URL for Cloudflare purging
+     *
+     * @return string|null
+     */
+    protected function getPageUrl()
+    {
+        $pageUrl = ltrim(DataObject::get_by_id(SiteTree::class, $this->owner->ID)->AbsoluteLink(), "/");
+        
+        if (class_exists('SilverStripe\Subsites\Model\Subsite')) {
+            \SilverStripe\Subsites\Model\Subsite::disable_subsite_filter();
+            $pageUrl = ltrim(
+                \SilverStripe\Subsites\Model\Subsite::get_from_all_subsites(SiteTree::class)
+                    ?->byID($this->owner->ID)
+                    ?->AbsoluteLink()
+                    ?? '/',
+                    '/'
+            );
+            $pageUrl = str_replace('http://', 'https://', $pageUrl);
+        }
+        
+        return $pageUrl ?: null;
+    }
+
+    /**
+     * Extension Hook - purge cache after publishing
      *
      * @param SiteTree $original
      */
     public function onAfterPublish(&$original)
     {
-        // if the page was just created, then there is no cache to purge and $original doesn't actually exist so bail out - resolves #3
-        // we don't purge anything if we're operating on localhost
-        if (CloudFlare::singleton()->hasCFCredentials() && $original && strlen($original->URLSegment) && Permission::check('CF_PURGE_PAGE')) {
+        // If page was just created or no credentials, bail out
+        if (!CloudFlare::singleton()->hasCFCredentials() || !$original || !strlen($original->URLSegment)) {
+            return;
+        }
 
-            $purger = Purge::create();
-            $shouldPurgeRelations = Purge::singleton()->getShouldPurgeRelations();
+        $purger = Purge::create();
+        $shouldPurgeRelations = Purge::singleton()->getShouldPurgeRelations();
 
-            $urls = [];
-            $pageUrl = ltrim(DataObject::get_by_id(SiteTree::class, $this->owner->ID)->AbsoluteLink(), "/");
-            if(class_exists('SilverStripe\Subsites\Model\Subsite')) {
-                \SilverStripe\Subsites\Model\Subsite::disable_subsite_filter();
-                $pageUrl = ltrim(
-                    \SilverStripe\Subsites\Model\Subsite::get_from_all_subsites(SiteTree::class)
-                        ?->byID($this->owner->ID)
-                        ?->AbsoluteLink()
-                        ?? '/',
-                        '/'
+        // If critical elements changed (URL, title, menu), purge everything
+        if (
+            $this->owner->URLSegment != $original->URLSegment || 
+            $this->owner->MenuTitle != $original->MenuTitle || 
+            $this->owner->Title != $original->Title
+        ) {
+            if (CloudFlare::config()->purge_all !== true) {
+                QueuedJobService::singleton()->queueJob(
+                    Injector::inst()->create(PurgePagesJob::class)
                 );
-                $pageUrl = str_replace('http://', 'https://', $pageUrl);
-            }
-            array_push($urls, $pageUrl);
 
-            if ($shouldPurgeRelations) {
-                $top = $this->getTopLevelParent();
-            }
-
-            if (
-                $this->owner->URLSegment != $original->URLSegment || // the slug has been altered
-                $this->owner->MenuTitle != $original->MenuTitle || // the navigation label has been altered
-                $this->owner->Title != $original->Title // the title has been altered
-            ) {
-                // purge everything
-                if(CloudFlare::config()->purge_all !== true) {
-                    QueuedJobService::singleton()->queueJob(
-                        Injector::inst()->create(PurgePagesJob::class)
-                    );
-
-                    Notifications::handleMessage(
+                Notifications::handleMessage(
+                    _t(
+                        "CloudFlare.SuccessCriticalElementChanged",
+                        "A critical element has changed in this page (url, menu label, or page title) as a result; everything was purged"
+                    )
+                );
+            } else {
+                $purger
+                    ->setSuccessMessage(
                         _t(
                             "CloudFlare.SuccessCriticalElementChanged",
                             "A critical element has changed in this page (url, menu label, or page title) as a result; everything was purged"
                         )
-                    );
-                } else {
-
-                    $purger
-                        ->setSuccessMessage(
-                            _t(
-                                "CloudFlare.SuccessCriticalElementChanged",
-                                "A critical element has changed in this page (url, menu label, or page title) as a result; everything was purged"
-                            )
-                        )
-                        ->setPurgeEverything(true)
-                        ->purge();
-
-                }
-
-            }
-
-            if ($shouldPurgeRelations && isset($top)) {
-                if ($this->owner->URLSegment != $top->URLSegment) {
-                    // this is a little convoluted consider refactoring/renaming
-                    $this->getChildrenRecursive($top->ID, $urls);
-                }
-            }
-
-            if (count($urls) === 1 && empty($urls[0])) {
-                $urls = array();
-            }
-
-            if (count($urls) === 1) {
-                $purger
-                    ->reset()
-                    ->setSuccessMessage(
-                        _t(
-                            "CloudFlare.SuccessPurgeCurrentPage",
-                            "Successfully purged cache for the current page"
-                        )
                     )
-                    ->setFailureMessage(
-                        _t(
-                            "CloudFlare.FailurePurgeCurrentPage",
-                            "An error occurred while attempting to purge cache for the current page"
-                        )
-                    )
-                    ->pushFile($urls[0])
-                    ->purge();
-            } else if (count($urls) > 1) {
-                $purger
-                    ->reset()
-                    ->setSuccessMessage(
-                        _t(
-                            "CloudFlare.SuccessPurgeMultiple",
-                            "Cache has been purged for: {file_count} files"
-                        )
-                    )
-                    ->setFailureMessage(
-                        _t(
-                            "CloudFlare.FailurePurgeMultiple",
-                            "An error occurred while attempting to purge cache for multiple pages"
-                        )
-                    )
-                    ->pushFile($urls)
+                    ->setPurgeEverything(true)
                     ->purge();
             }
+            return;
+        }
+
+        // Build list of URLs to purge
+        $urls = [];
+        $pageUrl = $this->getPageUrl();
+        if ($pageUrl) {
+            $urls[] = $pageUrl;
+        }
+
+        // If configured, also purge all child pages
+        if ($shouldPurgeRelations) {
+            $top = $this->getTopLevelParent();
+            if ($top && $this->owner->URLSegment != $top->URLSegment) {
+                $this->getChildrenRecursive($top->ID, $urls);
+            }
+        }
+
+        // Remove empty URLs
+        $urls = array_filter($urls);
+
+        if (empty($urls)) {
+            return;
+        }
+
+        if (count($urls) === 1) {
+            $purger
+                ->reset()
+                ->setSuccessMessage(
+                    _t(
+                        "CloudFlare.SuccessPurgeCurrentPage",
+                        "Successfully purged cache for the current page"
+                    )
+                )
+                ->setFailureMessage(
+                    _t(
+                        "CloudFlare.FailurePurgeCurrentPage",
+                        "An error occurred while attempting to purge cache for the current page"
+                    )
+                )
+                ->pushFile($urls[0])
+                ->purge();
+        } else {
+            $purger
+                ->reset()
+                ->setSuccessMessage(
+                    _t(
+                        "CloudFlare.SuccessPurgeMultiple",
+                        "Cache has been purged for {file_count} files"
+                    )
+                )
+                ->setFailureMessage(
+                    _t(
+                        "CloudFlare.FailurePurgeMultiple",
+                        "An error occurred while attempting to purge cache for multiple pages"
+                    )
+                )
+                ->pushFile($urls)
+                ->purge();
         }
     }
 
@@ -140,15 +153,18 @@ class CloudFlareExtension extends Extension
      */
     public function onAfterUnpublish()
     {
-        if(CloudFlare::config()->purge_all !== true) {
+        if (!CloudFlare::singleton()->hasCFCredentials()) {
+            return;
+        }
+
+        if (CloudFlare::config()->purge_all !== true) {
             QueuedJobService::singleton()->queueJob(
                 Injector::inst()->create(PurgePagesJob::class)
             );
 
             Notifications::handleMessage("Purge all pages queued successfully. This erases the page from navigation menus.");
-        } else if (CloudFlare::singleton()->hasCFCredentials() && Permission::check('CF_PURGE_PAGE')) {
-            $purger = Purge::create();
-            $purger
+        } else {
+            Purge::create()
                 ->setPurgeEverything(true)
                 ->setSuccessMessage(
                     _t(
@@ -156,8 +172,7 @@ class CloudFlareExtension extends Extension
                         "All cache has been purged as a result of unpublishing a page."
                     )
                 )
-                ->setPurgeEverything(true)
-                ->setSuccessMessage(
+                ->setFailureMessage(
                     _t(
                         "CloudFlare.FailureAllCachePurged",
                         "We encountered an error when attempting to purge all cache, consider doing this manually."
@@ -165,39 +180,35 @@ class CloudFlareExtension extends Extension
                 )
                 ->purge();
         }
-
     }
 
     /**
-     * Determines if the current owner or given page ID is a parent
+     * Check if the current page or given page ID is a parent
      *
-     * @param null|int $id SiteTree.ID
-     *
+     * @param int|null $id SiteTree.ID
      * @return bool
      */
-    public function isParent($id = NULL)
+    public function isParent($id = null)
     {
-        return ($this->getChildren($id)->count()) ? TRUE : FALSE;
+        return $this->getChildren($id)->count() > 0;
     }
 
     /**
-     * Gets the immediate children of a Page (doesn't care if those children are parents themselves - see getChildrenRecursive instead)
+     * Get immediate children of a page
      *
-     * @param null|int $parentID SiteTree.ParentID
-     *
-     * @return DataList
+     * @param int|null $parentID SiteTree.ParentID
+     * @return \SilverStripe\ORM\DataList
      */
-    public function getChildren($parentID = NULL)
+    public function getChildren($parentID = null)
     {
-        $id = (is_null($parentID)) ? $this->owner->ID : $parentID;
-
+        $id = ($parentID === null) ? $this->owner->ID : $parentID;
         return SiteTree::get()->filter("ParentID", $id);
     }
 
     /**
-     * Traverses through the SiteTree hierarchy until it reaches the top level parent
+     * Traverse through the SiteTree hierarchy to find the top level parent
      *
-     * @return DataObject|Object
+     * @return SiteTree
      */
     public function getTopLevelParent()
     {
@@ -211,17 +222,18 @@ class CloudFlareExtension extends Extension
     }
 
     /**
-     * Recursively fetches all children of the given page ID
+     * Recursively fetch all children of the given page ID
      *
-     * @param null|int $parentID
-     * @param array $output
+     * @param int|null $parentID
+     * @param array<string> $output Reference to array of URLs
+     * @return void
      */
     public function getChildrenRecursive($parentID, &$output)
     {
-        $id = (is_null($parentID)) ? $this->owner->ID : $parentID;
+        $id = ($parentID === null) ? $this->owner->ID : $parentID;
 
         if (!is_array($output)) {
-            $output = array();
+            $output = [];
         }
 
         $children = $this->getChildren($id);
@@ -231,7 +243,10 @@ class CloudFlareExtension extends Extension
                 $this->getChildrenRecursive($child->ID, $output);
             }
 
-            $output[] = $_SERVER['DOCUMENT_ROOT'] . ltrim(DataObject::get_by_id(SiteTree::class, $child->ID)->Link(), "/");
+            $childUrl = ltrim(DataObject::get_by_id(SiteTree::class, $child->ID)->AbsoluteLink(), "/");
+            if ($childUrl) {
+                $output[] = $childUrl;
+            }
         }
     }
 
@@ -266,7 +281,5 @@ class CloudFlareExtension extends Extension
                 )->addExtraClass('btn-secondary'),
             ]
         );
-
-
     }
 }

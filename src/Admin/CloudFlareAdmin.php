@@ -126,6 +126,8 @@ class CloudFlareAdmin extends LeftAndMain implements PermissionProvider
         );
 
         Notifications::handleMessage("Purge all pages queued successfully");
+
+        return $this->redirect($this->Link('/'));
     }
 
     /**
