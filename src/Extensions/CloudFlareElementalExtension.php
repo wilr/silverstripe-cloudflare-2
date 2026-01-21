@@ -4,7 +4,6 @@ namespace SteadLane\Cloudflare;
 
 use SilverStripe\CMS\Model\SiteTree;
 use SilverStripe\Core\Extension;
-use SilverStripe\Security\Permission;
 use SteadLane\Cloudflare\Purge;
 
 /**
@@ -19,10 +18,6 @@ class CloudFlareElementalExtension extends Extension
      */
     public function onAfterPublish()
     {
-        if (!Permission::check('CF_PURGE_PAGE')) {
-            return;
-        }
-
         $page = $this->owner->getPage();
 
         if (!($page instanceof SiteTree)) {
