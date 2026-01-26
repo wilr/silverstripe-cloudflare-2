@@ -606,7 +606,7 @@ class Purge
             $url = rtrim($url, '?');
 
             $purger
-                ->pushFile($page->AbsoluteLink())
+                ->pushFile($url)
                 ->setSuccessMessage('Cache has been purged for: ' . $url)
                 ->purge();
 
