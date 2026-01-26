@@ -9,7 +9,6 @@ use SilverStripe\ORM\DataList;
 use SilverStripe\ORM\DataObject;
 use SilverStripe\Forms\FieldList;
 use SilverStripe\Forms\FormAction;
-use SilverStripe\Security\Permission;
 use SteadLane\Cloudflare\Messages\Notifications;
 use Symbiote\QueuedJobs\Services\QueuedJobService;
 
@@ -29,7 +28,7 @@ class CloudFlareExtension extends Extension
     {
         // if the page was just created, then there is no cache to purge and $original doesn't actually exist so bail out - resolves #3
         // we don't purge anything if we're operating on localhost
-        if (CloudFlare::singleton()->hasCFCredentials() && $original && strlen($original->URLSegment) && Permission::check('CF_PURGE_PAGE')) {
+        if (CloudFlare::singleton()->hasCFCredentials() && $original && strlen($original->URLSegment)) {
 
             $purger = Purge::create();
             $shouldPurgeRelations = Purge::singleton()->getShouldPurgeRelations();
@@ -146,7 +145,7 @@ class CloudFlareExtension extends Extension
             );
 
             Notifications::handleMessage("Purge all pages queued successfully. This erases the page from navigation menus.");
-        } else if (CloudFlare::singleton()->hasCFCredentials() && Permission::check('CF_PURGE_PAGE')) {
+        } else if (CloudFlare::singleton()->hasCFCredentials()) {
             $purger = Purge::create();
             $purger
                 ->setPurgeEverything(true)
@@ -156,8 +155,7 @@ class CloudFlareExtension extends Extension
                         "All cache has been purged as a result of unpublishing a page."
                     )
                 )
-                ->setPurgeEverything(true)
-                ->setSuccessMessage(
+                ->setFailureMessage(
                     _t(
                         "CloudFlare.FailureAllCachePurged",
                         "We encountered an error when attempting to purge all cache, consider doing this manually."
