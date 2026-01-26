@@ -19,4 +19,15 @@ class CloudFlareElementalExtension extends Extension
 
         Purge::singleton()->quick('page', $page->ID);
     }
+
+    public function onAfterUnpublish()
+    {
+        $page = $this->owner->getPage();
+
+        if (!($page instanceof SiteTree)) {
+            return;
+        }
+
+        Purge::singleton()->quick('page', $page->ID);
+    }
 }

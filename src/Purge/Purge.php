@@ -599,9 +599,16 @@ class Purge
             }
             $page = $other_id;
 
+            // This will safely remove "stage" params, but keep any others. It doesn't matter where in the string "stage=" exists
+            $url = preg_replace('/([?&])stage=[^&]+(&|$)/', '$1', $page->AbsoluteLink());
+
+            // Trim any trailing "?" or "&".
+            $url = rtrim($url, '&');
+            $url = rtrim($url, '?');
+
             $purger
                 ->pushFile($page->AbsoluteLink())
-                ->setSuccessMessage('Cache has been purged for: ' . $page->AbsoluteLink())
+                ->setSuccessMessage('Cache has been purged for: ' . $url)
                 ->purge();
 
             return $purger->isSuccessful();

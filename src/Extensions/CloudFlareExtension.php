@@ -46,6 +46,14 @@ class CloudFlareExtension extends Extension
                 );
                 $pageUrl = str_replace('http://', 'https://', $pageUrl);
             }
+
+            // This will safely remove "stage" params, but keep any others. It doesn't matter where in the string "stage=" exists
+            $pageUrl = preg_replace('/([?&])stage=[^&]+(&|$)/', '$1', $pageUrl);
+
+            // Trim any trailing "?" or "&".
+            $pageUrl = rtrim($pageUrl, '&');
+            $pageUrl = rtrim($pageUrl, '?');
+
             array_push($urls, $pageUrl);
 
             if ($shouldPurgeRelations) {
