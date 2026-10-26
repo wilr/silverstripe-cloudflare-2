@@ -404,7 +404,10 @@ class Purge
     public function getEndpoint()
     {
         $zoneId = CloudFlare::singleton()->fetchZoneID();
-        return str_replace(":identifier", $zoneId, static::$endpoint);
+
+        // fetchZoneID() can return null/false when credentials or zone lookup fail;
+        // cast so str_replace() never receives a non-string under PHP 8.1+.
+        return str_replace(':identifier', (string) $zoneId, static::$endpoint);
     }
 
     /**
